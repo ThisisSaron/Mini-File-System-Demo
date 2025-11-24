@@ -341,12 +341,36 @@ int mkdir(Filesystem *fs, const char *path) {
         fs->inodes[inode_id-1].size = 0;
         strncpy(fs->inodes[inode_id-1].name, names[num-1], MAX_FILENAME_LEN);
 
-        fs->inodes[inode_id-1].file_type = IS_DIR; // ONLY THING CHANGED SO FAR
+        //printf("num: %d\n",num);
+
+        fs->inodes[inode_id-1].file_type = IS_DIR; // IS NOW A DIRECTORY
         fs->superblock.free_inodes--;
 
+        int free_block = -1;
+        for(int i = 0; i < 512;i++){
+                if (fs->block_device->block_status[i] == FREE){
+                        free_block = i;
+                        break;
+                }
+        }
+        if (free_block == -1){ //WHAT DO WE DO WHEN THERE ARE NO MORE BLOCKS
+                return -1;
+        }
+        fs->block_device->block_status[free_block] = USED;
+        fs->inodes[inode_id-1].block_pointers[0] = free_block; // Note: Again, this means block index 0, not index 1
+        fs->superblock.free_blocks -=1;
 
-        // For now, this code will just put any new file into the root dir
-        unsigned blocknum = fs->inodes[0].block_pointers[0];
+        if (num == 1){
+                n = 0 // ROOT INODE POSITION
+        }else{
+                for (int i = 0; i < num; i++) { // VALIDATE IF PATH EXIST (if we make it exist, we need recursion)
+                        if (fs->inodes[i].inode_id > 0) { // GET RID OF NUMBER OF FILES IN THE FIRST 4 BYTES (USE inode->size INSTEAD)
+                                printf("Inode %d: File size = %d bytes File name: %s\n", fs->inodes[i].inode_id, fs->inodes[i].size, fs->inodes[i].name);
+
+                }
+
+        // ADD THE DIR INTO ROOT DIR
+        unsigned blocknum = fs->inodes[0].block_pointers[0]; // REPLACE 1ST 0 WITH INODE NUMBER OF PREV DIR
         // See how many files existed here before
         unsigned num_prior_files = (fs->block_device->blocks[blocknum-1])[0];
         printf("Dir previously contained %d files\n",num_prior_files);
