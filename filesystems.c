@@ -113,8 +113,8 @@ void init_filesystem(Filesystem *fs) {
         fs->inodes[0].inode_id = 1; // inodes start at 1, even though the index starts at 0
         fs->inodes[0].size = 0;
         memset(fs->inodes[0].block_pointers, 0, sizeof(fs->inodes[0].block_pointers));
-        fs->inodes[0].file_type = IS_DIR;    // Root inode is a directory
-        fs->inodes[0].parent_inode = 0; // Root inode has no parent
+        fs->inodes[0].file_type = IS_FILE;    // Root inode is a directory
+        fs->inodes[0].parent_inode = 1; // Root inode has no parent //CHANGED ROOT INODE POSITION TO ROOT INODE ID
         char rootname = '/';
         strncpy(fs->inodes[0].name, &rootname, 1); // Give it a name so we can see it in listings
 
@@ -145,10 +145,41 @@ int create_file(Filesystem *fs, const char *filename) {
         // Note: Currently allows creation of multiple files with same name.
         // You can fix this if you want, or just avoid it in testing.
 
+        char names[20][MAX_FILENAME_LEN] = {}; // Larger than necessary
+
+        int num = splitname((char *)filename, names);
+        int n = -1;
+        if (num == 1){
+                n = 1; // ROOT INODE POSITION
+        }else{
+                //for (int i = 0; i < num; i++) { // VALIDATE IF PATH EXIST (if we make it exist, we need recursion)
+                int prev_dir_inodeid = 1;// INODE CAN BE 0 BUT INODE_ID STARTS AT 1
+                int count = 0;
+                for(int i =0; i<num-1;i++){
+                        for (int j=1; j<16;j+=1){
+                                unsigned dir_block_num = fs->inodes[prev_dir_inodeid-1].block_pointers[0];// IF MORE THAN 15 FILES, ADD SECOND BLOCK
+                                int content_inode = ((unsigned *) (fs->block_device->blocks[dir_block_num -1]))[j];
+                                if(content_inode != 0 && fs->inodes[content_inode-1].file_type == IS_DIR && strcmp(fs->inodes[content_inode-1].name,names[i])==0){
+                                         // GET RID OF NUMBER OF FILES IN THE FIRST 4 BYTES (USE inode->size INSTEAD)
+                                        printf("inode: %d, file type: %d", content_inode, fs->inodes[content_inode -1].file_type);
+                                        prev_dir_inodeid = content_inode;
+                                        count++;
+                                        break;
+                                }
+                        }
+                }
+                printf("%d\n",count);
+                if (count == num-1 && prev_dir_inodeid != 0){
+                        n = prev_dir_inodeid;
+                }
+        }
+        if (n == -1){
+                printf("NOT A VALID PATH\n");
+                return -1;
+        }
         if (fs->superblock.free_inodes == 0) {
                 return -1; // No free inodes left
         }
-
         // Find a free inode
         int inode_id = -1;
         for (int i = 0; i < MAX_FILES; i++) {
@@ -157,31 +188,46 @@ int create_file(Filesystem *fs, const char *filename) {
                         break;
                 }
         }
-
         if (inode_id == -1) {
                 return -1; // No free inodes found
         }
-
+        int free_block = -1;
+        for(int i = 0; i < 512;i++){
+                if (fs->block_device->block_status[i] == FREE){
+                        free_block = i;
+                        free_block++; // block pointer can not be 0, starts at 1
+                        break;
+                }
+        }
+        if (free_block == -1){ //WHAT DO WE DO WHEN THERE ARE NO MORE BLOCKS
+                printf("NO FREE BLOCKS\n");
+                return -1;
+        }
         // Initialize the inode for the new file
         fs->inodes[inode_id-1].inode_id = inode_id;
-        fs->inodes[inode_id-1].size = 0; // File size is initially 0
-        strncpy(fs->inodes[inode_id-1].name, filename, MAX_FILENAME_LEN);
-        fs->inodes[inode_id-1].file_type = IS_FILE; // File (not directory)
+        fs->inodes[inode_id-1].size = 0;
+        strncpy(fs->inodes[inode_id-1].name, names[num-1], MAX_FILENAME_LEN);
+        fs->inodes[inode_id-1].file_type = IS_FILE; // IS NOW A FILE
         fs->superblock.free_inodes--;
+        fs->block_device->block_status[free_block-1] = USED;
+        fs->inodes[inode_id-1].block_pointers[0] = free_block; // Note: Again, this means block index 0, not index 1
+        fs->superblock.free_blocks -=1;
 
-        // For now, this code will just put any new file into the root dir
-        unsigned blocknum = fs->inodes[0].block_pointers[0];
+        //printf("parent dblock: %d, child dblock "fs->inodes[n-1].block_pointers[0],fs->inodes[inode_id-1].block_pointers[0])
+        // ADD THE DIR INTO PREV DIR
+        fs->inodes[inode_id-1].parent_inode = n;
+        unsigned blocknum = fs->inodes[n-1].block_pointers[0]; // REPLACE 1ST 0 WITH INODE NUMBER OF PREV DIR
         // See how many files existed here before
         unsigned num_prior_files = (fs->block_device->blocks[blocknum-1])[0];
-        printf("Dir previously contained %d files\n",num_prior_files);
+        printf("Dir %s previously contained %d files\n",fs->inodes[n-1].name, num_prior_files);
 
         // Each entry is a 32 bit id and the first one is 4 bytes in, since the first entry is a counter
         ((unsigned *) (fs->block_device->blocks[blocknum-1]))[1+num_prior_files] = inode_id;
         // Add one to the file count for this dir (cast is for 32-bit field)
         ((unsigned *) (fs->block_device->blocks[blocknum-1]))[0] += 1;
-
-        printf("File '%s' created with inode %d\n", filename, inode_id);
+        printf("File '%s' created with inode %d\n", names[num-1], inode_id);
         return inode_id;
+        //return create_file(fs,path);
 }
 
 // Open an existing file by filename
@@ -308,10 +354,40 @@ int write_file(Filesystem *fs, int fd, const void *buf, size_t size) {
 
 // Simple directory creation (assuming inode is available for directories)
 int mkdir(Filesystem *fs, const char *path) {
+        char names[20][MAX_FILENAME_LEN] = {}; // Larger than necessary
+        int num = splitname((char *)path, names);
+
+        int n = -1;
+        if (num == 1){
+                n = 1; // ROOT INODE POSITION
+        }else{
+                //for (int i = 0; i < num; i++) { // VALIDATE IF PATH EXIST (if we make it exist, we need recursion)
+                int prev_dir_inodeid = 1;// INODE CAN BE 0 BUT INODE_ID STARTS AT 1
+                int count = 0;
+                for(int i =0; i<num-1;i++){
+                        for (int j=1; j<16;j+=1){
+                                unsigned dir_block_num = fs->inodes[prev_dir_inodeid-1].block_pointers[0];// IF MORE THAN 15 FILES, ADD SECOND BLOCK
+                                int content_inode = ((unsigned *) (fs->block_device->blocks[dir_block_num -1]))[j];
+                                if(content_inode != 0 && fs->inodes[content_inode-1].file_type == IS_DIR && strcmp(fs->inodes[content_inode-1].name,names[i])==0){
+                                         // GET RID OF NUMBER OF FILES IN THE FIRST 4 BYTES (USE inode->size INSTEAD)
+                                        prev_dir_inodeid = content_inode;
+                                        count++;
+                                        break;
+                                }
+                        }
+                }
+                printf("%d\n",count);
+                if (count == num-1 && prev_dir_inodeid != 0){
+                        n = prev_dir_inodeid;
+                }
+        }
+        if (n == -1){
+                printf("NOT A VALID PATH\n");
+                return -1;
+        }
         if (fs->superblock.free_inodes == 0) {
                 return -1; // No free inodes left
         }
-
         // Find a free inode
         int inode_id = -1;
         for (int i = 0; i < MAX_FILES; i++) {
@@ -320,36 +396,14 @@ int mkdir(Filesystem *fs, const char *path) {
                         break;
                 }
         }
-
         if (inode_id == -1) {
                 return -1; // No free inodes found
         }
-        ///////////////////////////////////////////////////////
-        char names[20][MAX_FILENAME_LEN] = {}; // Larger than necessary
-
-        //printf("Full path: %s\n",path);
-        int num = splitname((char *)path, names);
-        //printf("**** Split path: ****\n");
-        //printf("Got %d names\n",num);
-        for(int i=0; i<num; i++){
-                printf("  %s\n",names[i]);
-        }
-        //////////////////////////////////////////////
-
-        // Initialize the inode for the new file
-        fs->inodes[inode_id-1].inode_id = inode_id;
-        fs->inodes[inode_id-1].size = 0;
-        strncpy(fs->inodes[inode_id-1].name, names[num-1], MAX_FILENAME_LEN);
-
-        //printf("num: %d\n",num);
-
-        fs->inodes[inode_id-1].file_type = IS_DIR; // IS NOW A DIRECTORY
-        fs->superblock.free_inodes--;
-
         int free_block = -1;
         for(int i = 0; i < 512;i++){
                 if (fs->block_device->block_status[i] == FREE){
                         free_block = i;
+                        free_block++; // block pointer can not be 0, starts at 1
                         break;
                 }
         }
@@ -357,55 +411,28 @@ int mkdir(Filesystem *fs, const char *path) {
                 printf("NO FREE BLOCKS\n");
                 return -1;
         }
-        fs->block_device->block_status[free_block] = USED;
+        // Initialize the inode for the new file
+        fs->inodes[inode_id-1].inode_id = inode_id;
+        fs->inodes[inode_id-1].size = 0;
+        strncpy(fs->inodes[inode_id-1].name, names[num-1], MAX_FILENAME_LEN);
+        fs->inodes[inode_id-1].file_type = IS_DIR; // IS NOW A DIRECTORY
+        fs->superblock.free_inodes--;
+        fs->block_device->block_status[free_block-1] = USED;
         fs->inodes[inode_id-1].block_pointers[0] = free_block; // Note: Again, this means block index 0, not index 1
         fs->superblock.free_blocks -=1;
-        int n = -1;
-        if (num == 1){
-                n = 0; // ROOT INODE POSITION
-        }else{
-                //for (int i = 0; i < num; i++) { // VALIDATE IF PATH EXIST (if we make it exist, we need recursion)
-                int prev_dir = 0;
-                int count = 0;
-                for(int i =0; i<num-1;i++){
-                        for (int j=1; j<16;j+=1){
-                                unsigned dir_block_num = fs->inodes[prev_dir].block_pointers[0];
-                                int dir_inode = ((unsigned *) (fs->block_device->blocks[dir_block_num -1]))[j];
-                                //printf("%d\n",fs->block_device->blocks[dir_block_num]);
-                                //printf("%s, %s\n",fs->inodes[dir_inode].name, names[i]);
-                                if(dir_inode != 0 && fs->inodes[dir_inode].file_type == IS_DIR && strcmp(fs->inodes[dir_inode].name,names[i])){
-                                         // GET RID OF NUMBER OF FILES IN THE FIRST 4 BYTES (USE inode->size INSTEAD)
-                                        prev_dir = dir_inode;
-                                        count++;
-                                        break;
-                                }
-                        }
-                }
-                if (count == num-1 && prev_dir != 0){
-                        n = prev_dir;
-                }
 
-        }
-        if (n == -1){
-                printf("NOT A VALID PATH\n");
-                return -1;
-        }
+        //printf("parent dblock: %d, child dblock "fs->inodes[n-1].block_pointers[0],fs->inodes[inode_id-1].block_pointers[0])
         // ADD THE DIR INTO PREV DIR
-        if (n == 0){
-                fs->inodes[inode_id-1].parent_inode = n;
-        }else {
-                fs->inodes[inode_id-1].parent_inode = n-1;
-        }
-        unsigned blocknum = fs->inodes[n].block_pointers[0]; // REPLACE 1ST 0 WITH INODE NUMBER OF PREV DIR
+        fs->inodes[inode_id-1].parent_inode = n;
+        unsigned blocknum = fs->inodes[n-1].block_pointers[0]; // REPLACE 1ST 0 WITH INODE NUMBER OF PREV DIR
         // See how many files existed here before
         unsigned num_prior_files = (fs->block_device->blocks[blocknum-1])[0];
-        printf("Dir previously contained %d files\n",num_prior_files);
+        printf("Dir %s previously contained %d files\n",fs->inodes[n-1].name, num_prior_files);
 
         // Each entry is a 32 bit id and the first one is 4 bytes in, since the first entry is a counter
         ((unsigned *) (fs->block_device->blocks[blocknum-1]))[1+num_prior_files] = inode_id;
         // Add one to the file count for this dir (cast is for 32-bit field)
         ((unsigned *) (fs->block_device->blocks[blocknum-1]))[0] += 1;
-
         printf("Directory '%s' created with inode %d\n", names[num-1], inode_id);
         return inode_id;
         //return create_file(fs,path);
@@ -414,20 +441,72 @@ int mkdir(Filesystem *fs, const char *path) {
 // Remove a file or (empty) directory
 int rm(Filesystem *fs, const char *filename) { //UNDER CONSTRUCTION
         // For simplicity, just remove the file
-        for (int i = 0; i < MAX_FILES; i++) {
-                if (strcmp(fs->inodes[i].name,filename)){
-                        unsigned blocknum = fs->inodes[i].block_pointers[0];
-                        printf("%d\n",(fs->inodes[i].parent_inode));
-                        if (fs->inodes[i].file_type == IS_DIR && (fs->block_device->blocks[blocknum-1])[0] > 0){ return -1;}
-                        ((unsigned *) (fs->block_device->blocks[blocknum-1]))[0] -= 1;
-                        fs->inodes[i].inode_id = 0; // Unused inode
-                        fs->inodes[i].size = 0;
-                        memset(fs->inodes[i].block_pointers, 0, sizeof(fs->inodes[i].block_pointers));                                                                                          fs->inodes[i].file_type = NO_TYPE; // No type
-                        fs->inodes[i].parent_inode = 0; // No parent
-                        fs->open_files[i].inode_id = 0;
-                        fs->open_files[i].current_offset = 0;
+        char names[20][MAX_FILENAME_LEN] = {};
+        int num = splitname((char *)filename, names);
+
+        int n = -1;
+        //for (int i = 0; i < num; i++) { // VALIDATE IF PATH EXIST (if we make it exist, we need recursion)
+        int count = 0;
+        int inode_id = 1;
+        for(int i =0; i<num;i++){
+                for (int j=1; j<16;j+=1){
+                        unsigned dir_block_num = fs->inodes[inode_id-1].block_pointers[0];// IF MORE THAN 15 FILES, ADD SECOND BLOCK
+                        int content_inode = ((unsigned *) (fs->block_device->blocks[dir_block_num -1]))[j];
+                        if(content_inode != 0 && (fs->inodes[content_inode-1].file_type == IS_DIR || i == num-1) && strcmp(fs->inodes[content_inode-1].name,names[i])==0){
+                                // GET RID OF NUMBER OF FILES IN THE FIRST 4 BYTES (USE inode->size INSTEAD)
+                                inode_id = content_inode;
+                                count++;
+                                break;
                         }
+                }
         }
+        printf("%d\n",count);
+        if (count == num && inode_id != 0){
+                n = inode_id;
+        }
+
+
+        if (n == -1){
+                printf("NOT A VALID PATH\n");
+                return -1;
+        }
+
+
+        printf("%s\n",filename);
+        unsigned blocknum = fs->inodes[inode_id-1].block_pointers[0];// BECAUSE WE START FROM 0
+        fs->block_device->block_status[blocknum-1] = FREE; // GO THROUGH BLOCK AND MARK THEM AS 0
+        fs->superblock.free_blocks +=1;
+        printf("%d\n",(fs->block_device->blocks[blocknum-1])[0]);
+
+        if (fs->inodes[inode_id-1].file_type == IS_DIR && (fs->block_device->blocks[blocknum-1])[0] > 0){
+                printf("Can't delete directory unless empty\n");
+                return -1;
+        }
+        int parent_inode = fs->inodes[inode_id-1].parent_inode; // GET PARENT INODE
+        // INSTEAD OF ERASING THE INODE, REWRITE THE DIRECTORY DATA BLOCK WITH THE REMOVED FILE INODE NOT INCLUDED
+        int contents[20];
+        int curr = 1;
+        unsigned dir_block_num = fs->inodes[parent_inode-1].block_pointers[0];// PARENT INODE DATA BLOCK (JUST ONE FOR NOW)
+        for (int j=1; j<16;j+=1){ // LOOP TO GO THROUGH PARENT DATA BLOCK AND ERASE THE FILE INODE
+                int content_inode = ((unsigned *) (fs->block_device->blocks[dir_block_num -1]))[j];
+                if(content_inode != 0 && content_inode != inode_id){
+                        contents[curr] = content_inode;
+                        curr++;
+                        ((unsigned *) (fs->block_device->blocks[dir_block_num -1]))[j] = 0; //ZEROING THE INODE
+                }
+        }
+        for (int k=1;k<=curr;k++){ // REWRITING THE CONTENTS OF THE DIR BACK INTO (EXCLUDING THE REMOVED INODE)
+                ((unsigned *) (fs->block_device->blocks[dir_block_num -1]))[k] = contents[curr];
+        }
+
+        ((unsigned *) (fs->block_device->blocks[dir_block_num-1]))[0] -= 1;//DECREMENT AMOUNT OF FILES IN PARENT INODE
+        fs->inodes[inode_id-1].inode_id = 0; // Unused inode
+        fs->inodes[inode_id-1].size = 0;
+        memset(fs->inodes[inode_id-1].block_pointers, 0, sizeof(fs->inodes[inode_id-1].block_pointers));// NEEDS TO CHANGE WITH MULTIPLE BLOCKS                            
+        fs->inodes[inode_id-1].file_type = NO_TYPE; // No type
+        fs->inodes[inode_id-1].parent_inode = 0; // No parent
+        fs->open_files[inode_id-1].inode_id = 0;
+        fs->open_files[inode_id-1].current_offset = 0;
         //return 0; // Implement file deletion logic here
 }
 
@@ -436,7 +515,7 @@ void list_files(Filesystem *fs) {
         // This is a placeholder that just prints the names of each in-use inode
         for (int i = 0; i < MAX_FILES; i++) {
                 if (fs->inodes[i].inode_id > 0) {
-                        printf("Inode %d: File size = %d bytes File name: %s Directory it's in: %s\n", fs->inodes[i].inode_id, fs->inodes[i].size, fs->inodes[i].name, fs->inodes[fs->inodes[i].parent_inode].name);
+                        printf("Inode %d: File size = %d bytes File name: %s Directory it's in: %s\n", fs->inodes[i].inode_id, fs->inodes[i].size, fs->inodes[i].name, fs->inodes[(fs->inodes[i].parent_inode)-1].name);
                 }
         }
 }
