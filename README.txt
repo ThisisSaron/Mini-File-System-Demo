@@ -36,14 +36,14 @@
         created by simply allocating the first free inode.
 
         Tasks:
-            Extend this function to handle directory structure.
-            Given a path, put the new file in the correct directory.
-            You will need to use the helper function splitname()
-			Also make any changes needed to support multi-block files (at least 4 blocks, for 256 B)
-			Note that an inode contains two block pointers.
-			You can use the second one for indirect blocks.
+            Extend this function to handle directory structure. --> DONE ////////
+            Given a path, put the new file in the correct directory. --> DONE////////
+            You will need to use the helper function splitname() --> DID/////////////
+			Also make any changes needed to support multi-block files (at least 4 blocks, for 256 B) --> NEED TO BE DONE
+			Note that an inode contains two block pointers. --> WE'RE NOW DOING LINKED LIST
+			You can use the second one for indirect blocks. --> NAH/////////////
 
-    2. File Opening/Closing
+    2. File Opening/Closing --> NEED TO BE DONE BUT SIMPLE ENOUGH
 
         The open_file() function opens a file by its inode and returns a file
         descriptor. A file descriptor is used to track the current read/write position
@@ -56,7 +56,7 @@
             Given a path, open the file from the correct directory.
             You will need to use the helper function splitname()
 
-    3. File Reading and Writing
+    3. File Reading and Writing --> NEED TO BE DONE, PROBABLY GOING TO BE A PAIN
 
         The read_file() and write_file() functions allow reading and writing data to
         the file system. These functions interact with blocks of the block device,
@@ -69,7 +69,7 @@
             across multiple blocks. You should use indirect block addressing to handle
             large files and fragmentation.
 
-    4. Directory creation
+    4. Directory creation --> DONE/////////////
 
         The filesystem currently only supports basic file creation. You need to extend
         it to support directories.
@@ -77,7 +77,7 @@
         Tasks:
         Implement the mkdir() function to create directories (including nested directories).
 
-    5. File and Directory Deletion
+    5. File and Directory Deletion --> DONE//////////////
 
         The rm() function is a placeholder.
 
@@ -87,7 +87,7 @@
 		It should also be able to delete an empty directory, but it should refuse to delete
         a non-empty directory (return -1).
 
-    6. File Listing
+    6. File Listing --> GOOD LUCK DIANA :D
 		The list_files() function is a placeholder.
         Tasks:
 		Use depth-first search and show file hierarchy.
