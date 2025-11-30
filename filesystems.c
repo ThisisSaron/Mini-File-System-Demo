@@ -1,4 +1,4 @@
-// PUT YOUR NAMES HERE:
+// PUT YOUR NAMES HERE: Saron Mindaye and Diana Morling
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,7 +113,7 @@ void init_filesystem(Filesystem *fs) {
         fs->inodes[0].inode_id = 1; // inodes start at 1, even though the index starts at 0
         fs->inodes[0].size = 0;
         memset(fs->inodes[0].block_pointers, 0, sizeof(fs->inodes[0].block_pointers));
-        fs->inodes[0].file_type = IS_FILE;    // Root inode is a directory
+        fs->inodes[0].file_type = IS_DIR;    // Root inode is a directory
         fs->inodes[0].parent_inode = 1; // Root inode has no parent //CHANGED ROOT INODE POSITION TO ROOT INODE ID
         char rootname = '/';
         strncpy(fs->inodes[0].name, &rootname, 1); // Give it a name so we can see it in listings
@@ -510,14 +510,57 @@ int rm(Filesystem *fs, const char *filename) { //UNDER CONSTRUCTION
         //return 0; // Implement file deletion logic here
 }
 
+void dfs_recursion(Filesystem *fs, uint32_t inode_id, int depth){
+	//  Base case: root dir, end recursion
+	if (inode_id == 0) {
+		return;}
+	
+	// Get pointer to curr inode, print indentation level and name
+	Inode *curr = &fs->inodes[inode_id-1];
+	//printf("Curr inode: %d\n", fs->inodes[inode_id-1]);
+	//printf("Depth: %d\n", depth);
+	for (int i=0; i<depth; i++) {
+		printf("   ");}
+	printf("%s", curr->name);
+	// Add slash at the end if it's a directory (except for root dir because the / gets printed as the name)
+	if (curr->file_type == IS_DIR && inode_id != 1) { 
+		printf("/");}
+	printf("\n");
+
+	// We can stop there if not a dir, otherwise go through subdirs/files
+	if (curr->file_type != IS_DIR) {
+		return;}
+	
+	// Get block with directory entries 
+	unsigned block = curr->block_pointers[0];
+    	if (block == 0) return;  // Dir is empty
+
+	// Now get the number of children files we need to do DFS on
+	unsigned *entries = (unsigned *)fs->block_device->blocks[block - 1];
+    	unsigned count = entries[0];
+
+	// Traverse children recursively, increasing depth to get proper indentation
+    	for (unsigned i = 1; i <= count; i++) {
+        	unsigned child_inode = entries[i];
+        	if (child_inode != 0) {
+            		dfs_recursion(fs, child_inode, depth + 1);
+        	}
+    	}
+
+}
+
+
 // List all files
 void list_files(Filesystem *fs) {
+	// Call recursive function starting at the root inode and depth 0
+	dfs_recursion(fs, fs->superblock.root_inode_id, 0);
+
         // This is a placeholder that just prints the names of each in-use inode
-        for (int i = 0; i < MAX_FILES; i++) {
-                if (fs->inodes[i].inode_id > 0) {
-                        printf("Inode %d: File size = %d bytes File name: %s Directory it's in: %s\n", fs->inodes[i].inode_id, fs->inodes[i].size, fs->inodes[i].name, fs->inodes[(fs->inodes[i].parent_inode)-1].name);
-                }
-        }
+//        for (int i = 0; i < MAX_FILES; i++) {
+//                if (fs->inodes[i].inode_id > 0) {
+//                       printf("Inode %d: File size = %d bytes File name: %s Directory it's in: %s\n", fs->inodes[i].inode_id, fs->inodes[i].size, fs->inodes[i].name, fs->inodes[(fs->inodes[i].parent_inode)-1].name);
+//                }
+//       
 }
 
 /*
