@@ -87,7 +87,7 @@
 		It should also be able to delete an empty directory, but it should refuse to delete
         a non-empty directory (return -1).
 
-    6. File Listing --> GOOD LUCK DIANA :D
+    6. File Listing --> DONE//////////////
 		The list_files() function is a placeholder.
         Tasks:
 		Use depth-first search and show file hierarchy.
