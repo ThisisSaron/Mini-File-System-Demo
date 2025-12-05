@@ -140,6 +140,22 @@ void init_filesystem(Filesystem *fs) {
         }
 }
 
+
+int get_free_block(Filesystem *fs) {
+        uint32_t newblock = 0;
+        for(int i=0; i< NUM_BLOCKS; i++){
+                if(fs->block_device->block_status[i] == FREE){
+                        fs->block_device->block_status[i] = USED;
+                        fs->superblock.free_blocks -=1;
+                        //printf("Found free block with id=%d\n",i+1);
+                        newblock = i+1;
+                        break;
+                 }
+        }
+        return newblock;
+
+}
+
 // Create a new file in the filesystem
 int create_file(Filesystem *fs, const char *filename) {
         // Note: Currently allows creation of multiple files with same name.
@@ -213,7 +229,6 @@ int create_file(Filesystem *fs, const char *filename) {
         fs->inodes[inode_id-1].block_pointers[0] = free_block; // Note: Again, this means block index 0, not index 1
         fs->superblock.free_blocks -=1;
 
-        //printf("parent dblock: %d, child dblock "fs->inodes[n-1].block_pointers[0],fs->inodes[inode_id-1].block_pointers[0])
         // ADD THE DIR INTO PREV DIR
         fs->inodes[inode_id-1].parent_inode = n;
         unsigned blocknum = fs->inodes[n-1].block_pointers[0]; // REPLACE 1ST 0 WITH INODE NUMBER OF PREV DIR
@@ -225,9 +240,10 @@ int create_file(Filesystem *fs, const char *filename) {
         ((unsigned *) (fs->block_device->blocks[blocknum-1]))[1+num_prior_files] = inode_id;
         // Add one to the file count for this dir (cast is for 32-bit field)
         ((unsigned *) (fs->block_device->blocks[blocknum-1]))[0] += 1;
-        printf("File '%s' created with inode %d\n", names[num-1], inode_id);
+        printf("Directory '%s' created with inode %d\n", names[num-1], inode_id);
         return inode_id;
-        //return create_file(fs,path);
+
+
 }
 
 // Open an existing file by filename
@@ -236,21 +252,44 @@ int open_file(Filesystem *fs, const char *filename) {
         // Note: Doesn't split the path (/ is not supported). You need to fix this to support directories.
 
         // Find the file based on the name
-        int inode_id = -1;
-        for (int i = 0; i < MAX_FILES; i++) {
-                if ((fs->inodes[i].file_type == IS_FILE)&&(!strcmp((fs->inodes[i].name), filename))) {
-                        inode_id = fs->inodes[i].inode_id;
-                        break;
+        char names[20][MAX_FILENAME_LEN] = {};
+        int num = splitname((char *)filename, names);
+
+        int n = -1;
+        //for (int i = 0; i < num; i++) { // VALIDATE IF PATH EXIST (if we make it exist, we need recursion)
+        int count = 0;
+        int inode_id = 1;
+        for(int i =0; i<num;i++){
+                for (int j=1; j<16;j+=1){
+                        unsigned dir_block_num = fs->inodes[inode_id-1].block_pointers[0];
+                        int content_inode = ((unsigned *) (fs->block_device->blocks[dir_block_num -1]))[j];
+                        if(content_inode != 0 && (fs->inodes[content_inode-1].file_type == IS_DIR || i == num-1) && strcmp(fs->inodes[content_inode-1].name,names[i])==0){ 
+                                inode_id = content_inode;
+                                count++;
+                                break;
+                        }
                 }
         }
+        printf("%d\n",count);
+        if (count == num && inode_id != 0){
+                n = inode_id;
+        }
 
-        // Error checks
-        if (inode_id == -1) {
-                printf("File not found\n");
+
+        if (n == -1){
+                printf("NOT A VALID PATH\n");
                 return -1;
         }
+        // Error checks
+        //if (inode_id == -1) {
+        //        printf("File not found\n");
+        //        return -1;
+        //}
         else if(inode_id == 0) {
                 printf("Error: inode id is 0!\n");
+                return -1;
+        }else if (fs->inodes[inode_id-1].file_type != IS_FILE){
+                printf("Error: Cannot write in a directory");
                 return -1;
         }
         printf("Found file with inode %d\n",inode_id);
@@ -301,11 +340,37 @@ int read_file(Filesystem *fs, int fd, void *buf, size_t size) {
         // For simplicity, reading directly from blocks (not handling fragmentation, etc.)
         // You will need to do this for each block of the file, in order.
         size_t bytes_to_read = size < inode->size ? size : inode->size;
-        memcpy(buf, fs->block_device->blocks[inode->block_pointers[0]-1], bytes_to_read);
 
-        fs->open_files[fd].current_offset += bytes_to_read;
+        int curr_block = inode->block_pointers[0]-1;
+        fs->open_files[fd].current_offset = 0;
+        int amount_to_read = BLOCK_SIZE - 4 > bytes_to_read ? bytes_to_read : BLOCK_SIZE -4;
+        char *tmp_buf = buf;
+        while (curr_block != 0){
+                //printf("block being read: %d\n", curr_block);
+                amount_to_read = bytes_to_read - fs->open_files[fd].current_offset;
+                //printf("amount being read: %d\n",amount_to_read);
+                if (amount_to_read > BLOCK_SIZE -4){
+                        memcpy(tmp_buf, fs->block_device->blocks[curr_block], BLOCK_SIZE -4);
+                        fs->open_files[fd].current_offset += BLOCK_SIZE - 4;
+                        //for (int i = 0; i < BLOCK_SIZE; i+= 4) {
+                        //      printf("%d ", fs->block_device->blocks[curr_block][i]);
+                        //}
+                        //break;
+                        curr_block = fs->block_device->blocks[curr_block][BLOCK_SIZE-4];
+                        tmp_buf += BLOCK_SIZE -4;
+                }else {
+                        //for (int i = 0; i < BLOCK_SIZE; i+= 4) {
+                        //        printf("%d ", fs->block_device->blocks[curr_block][i]);
+                        //}
+                        memcpy(tmp_buf, fs->block_device->blocks[curr_block], amount_to_read);
+                        curr_block = fs->block_device->blocks[curr_block][BLOCK_SIZE-4];
+                }
+
+        }
         return bytes_to_read;
 }
+
+
 
 // Write to an open file
 int write_file(Filesystem *fs, int fd, const void *buf, size_t size) {
@@ -314,10 +379,10 @@ int write_file(Filesystem *fs, int fd, const void *buf, size_t size) {
         }
 
         /////// GET RID OF THIS ERROR WHEN ADDING MULTIPLE BLOCKS PER FILE
-        if(size > BLOCK_SIZE){
-                printf("Error: data exceeds current max file size (1 block)\n");
-                return -1;
-        }
+        //if(size > BLOCK_SIZE){
+        //        printf("Error: data exceeds current max file size (1 block)\n");
+        //        return -1;
+        //}
 
         int inode_id = fs->open_files[fd].inode_id;
         Inode *inode = &fs->inodes[inode_id - 1];
@@ -325,28 +390,48 @@ int write_file(Filesystem *fs, int fd, const void *buf, size_t size) {
         ////////// THIS CODE ASSUMES THE FILE IS ORIGINALLY EMPTY (JUST CREATED)
         ////////// add a section where it checks if block_pointer[0] is already being used, if it is, replace or add?, check the size then add block_pointer[1]
         // Find a free block and store the id in inode->block_pointers[0]
-        if(inode->block_pointers[0] == 0){
-                uint32_t newblock = 0;
-                for(int i=0; i< NUM_BLOCKS; i++){
-                        if(fs->block_device->block_status[i] == FREE){
-                                fs->block_device->block_status[i] = USED;
-                                fs->superblock.free_blocks -=1;
-                                printf("Found free block with id=%d\n",i+1);
-                                newblock = i+1;
-                                break;
-                        }
+
+        // IF THE FILE WAS WRITTEN TO BEFORE, CLEAR IT, IF NOT, GET A FREE BLOCK
+
+        if(inode->size > 0){
+                //CLEAR OUT THE BLOCKS
+                int blk_num = inode->block_pointers[0]-1;
+                int nxt_blk = fs->block_device->blocks[inode->block_pointers[0]-1][BLOCK_SIZE-4];
+                //memset(fs->block_device->blocks[inode->block_pointers[0]-1], 0, BLOCK_SIZE);
+                memset(fs->block_device->blocks[blk_num], 0, BLOCK_SIZE);
+                while (nxt_blk != 0){
+                        blk_num = nxt_blk;
+                        nxt_blk = fs->block_device->blocks[blk_num][BLOCK_SIZE-4];
+                        memset(fs->block_device->blocks[blk_num], 0, BLOCK_SIZE);
                 }
-                // If we didn't find a free block to use
-                if(newblock == 0) return -1;
-
-                // Use the block we found
-                inode->block_pointers[0] = newblock;
         }
+        // If we didn't find a free block to use
+        int newblock = get_free_block(fs);
+        if(newblock == 0) return -1;
 
-        // Clear the old contents
-        memset(fs->block_device->blocks[inode->block_pointers[0]-1], 0, BLOCK_SIZE);
+        // Use the block we found
+        inode->block_pointers[0] = newblock;
+
         // Write to the first (curently only) block
-        memcpy(fs->block_device->blocks[inode->block_pointers[0]-1], buf, size);
+        int leftover = size ; // (-4 because last byte is pointer and should be 0 even if not used)
+        const void * pos = buf;
+        while (1){
+                if (leftover > BLOCK_SIZE -4){
+                        memcpy(fs->block_device->blocks[newblock-1], pos, BLOCK_SIZE - 4);
+                        int nxtblock = get_free_block(fs);
+                        if(nxtblock == 0){
+                                printf("Error, RAN OUT OF BLOCKS");
+                                return -1;
+                        }
+                        fs->block_device->blocks[newblock-1][BLOCK_SIZE-4] = nxtblock-1;
+                        newblock = nxtblock;
+                        leftover = leftover - (BLOCK_SIZE -4);
+                        pos += (BLOCK_SIZE - 4);
+                }else{
+                        memcpy(fs->block_device->blocks[newblock-1], pos, leftover);
+                        break;
+                }
+        }
         inode->size = size;
 
         return size;
@@ -422,6 +507,7 @@ int mkdir(Filesystem *fs, const char *path) {
         fs->superblock.free_blocks -=1;
 
         //printf("parent dblock: %d, child dblock "fs->inodes[n-1].block_pointers[0],fs->inodes[inode_id-1].block_pointers[0])
+
         // ADD THE DIR INTO PREV DIR
         fs->inodes[inode_id-1].parent_inode = n;
         unsigned blocknum = fs->inodes[n-1].block_pointers[0]; // REPLACE 1ST 0 WITH INODE NUMBER OF PREV DIR
@@ -435,7 +521,9 @@ int mkdir(Filesystem *fs, const char *path) {
         ((unsigned *) (fs->block_device->blocks[blocknum-1]))[0] += 1;
         printf("Directory '%s' created with inode %d\n", names[num-1], inode_id);
         return inode_id;
-        //return create_file(fs,path);
+
+
+
 }
 
 // Remove a file or (empty) directory
@@ -448,12 +536,11 @@ int rm(Filesystem *fs, const char *filename) { //UNDER CONSTRUCTION
         //for (int i = 0; i < num; i++) { // VALIDATE IF PATH EXIST (if we make it exist, we need recursion)
         int count = 0;
         int inode_id = 1;
-        for(int i =0; i<num;i++){
+        for(int i =0; i<num;i++){// ADD A LOOP TO CLEAR UP MULTIBLOCK FILES
                 for (int j=1; j<16;j+=1){
                         unsigned dir_block_num = fs->inodes[inode_id-1].block_pointers[0];// IF MORE THAN 15 FILES, ADD SECOND BLOCK
                         int content_inode = ((unsigned *) (fs->block_device->blocks[dir_block_num -1]))[j];
                         if(content_inode != 0 && (fs->inodes[content_inode-1].file_type == IS_DIR || i == num-1) && strcmp(fs->inodes[content_inode-1].name,names[i])==0){
-                                // GET RID OF NUMBER OF FILES IN THE FIRST 4 BYTES (USE inode->size INSTEAD)
                                 inode_id = content_inode;
                                 count++;
                                 break;
@@ -473,8 +560,10 @@ int rm(Filesystem *fs, const char *filename) { //UNDER CONSTRUCTION
 
 
         printf("%s\n",filename);
+
+
         unsigned blocknum = fs->inodes[inode_id-1].block_pointers[0];// BECAUSE WE START FROM 0
-        fs->block_device->block_status[blocknum-1] = FREE; // GO THROUGH BLOCK AND MARK THEM AS 0
+        //fs->block_device->block_status[blocknum-1] = FREE; // GO THROUGH BLOCK AND MARK THEM AS 0
         fs->superblock.free_blocks +=1;
         printf("%d\n",(fs->block_device->blocks[blocknum-1])[0]);
 
@@ -499,10 +588,23 @@ int rm(Filesystem *fs, const char *filename) { //UNDER CONSTRUCTION
                 ((unsigned *) (fs->block_device->blocks[dir_block_num -1]))[k] = contents[curr];
         }
 
+        if(fs->inodes[inode_id -1].file_type == IS_FILE && fs->inodes[inode_id -1].size > 0){
+                //CLEAR OUT THE BLOCKS
+                int blk_num = fs->inodes[inode_id-1].block_pointers[0]-1;
+                int nxt_blk = fs->block_device->blocks[fs->inodes[inode_id-1].block_pointers[0]-1][BLOCK_SIZE-4];
+                //memset(fs->block_device->blocks[inode->block_pointers[0]-1], 0, BLOCK_SIZE);
+                memset(fs->block_device->blocks[blk_num], 0, BLOCK_SIZE);
+                while (nxt_blk != 0){
+                        blk_num = nxt_blk;
+                        nxt_blk = fs->block_device->blocks[blk_num][BLOCK_SIZE-4];
+                        memset(fs->block_device->blocks[blk_num], 0, BLOCK_SIZE);
+                }
+        }
+
         ((unsigned *) (fs->block_device->blocks[dir_block_num-1]))[0] -= 1;//DECREMENT AMOUNT OF FILES IN PARENT INODE
         fs->inodes[inode_id-1].inode_id = 0; // Unused inode
         fs->inodes[inode_id-1].size = 0;
-        memset(fs->inodes[inode_id-1].block_pointers, 0, sizeof(fs->inodes[inode_id-1].block_pointers));// NEEDS TO CHANGE WITH MULTIPLE BLOCKS                            
+        memset(fs->inodes[inode_id-1].block_pointers, 0, sizeof(fs->inodes[inode_id-1].block_pointers));// NEEDS TO CHANGE WITH MULTIPLE BLOCKS
         fs->inodes[inode_id-1].file_type = NO_TYPE; // No type
         fs->inodes[inode_id-1].parent_inode = 0; // No parent
         fs->open_files[inode_id-1].inode_id = 0;
@@ -511,56 +613,56 @@ int rm(Filesystem *fs, const char *filename) { //UNDER CONSTRUCTION
 }
 
 void dfs_recursion(Filesystem *fs, uint32_t inode_id, int depth){
-	//  Base case: root dir, end recursion
-	if (inode_id == 0) {
-		return;}
-	
-	// Get pointer to curr inode, print indentation level and name
-	Inode *curr = &fs->inodes[inode_id-1];
-	//printf("Curr inode: %d\n", fs->inodes[inode_id-1]);
-	//printf("Depth: %d\n", depth);
-	for (int i=0; i<depth; i++) {
-		printf("   ");}
-	printf("%s", curr->name);
-	// Add slash at the end if it's a directory (except for root dir because the / gets printed as the name)
-	if (curr->file_type == IS_DIR && inode_id != 1) { 
-		printf("/");}
-	printf("\n");
+        //  Base case: root dir, end recursion
+        if (inode_id == 0) {
+                return;}
 
-	// We can stop there if not a dir, otherwise go through subdirs/files
-	if (curr->file_type != IS_DIR) {
-		return;}
-	
-	// Get block with directory entries 
-	unsigned block = curr->block_pointers[0];
-    	if (block == 0) return;  // Dir is empty
+        // Get pointer to curr inode, print indentation level and name
+        Inode *curr = &fs->inodes[inode_id-1];
+        //printf("Curr inode: %d\n", fs->inodes[inode_id-1]);
+        //printf("Depth: %d\n", depth);
+        for (int i=0; i<depth; i++) {
+                printf("   ");}
+        printf("%s", curr->name);
+        // Add slash at the end if it's a directory (except for root dir because the / gets printed as the name)
+        if (curr->file_type == IS_DIR && inode_id != 1) {
+                printf("/");}
+        printf("\n");
 
-	// Now get the number of children files we need to do DFS on
-	unsigned *entries = (unsigned *)fs->block_device->blocks[block - 1];
-    	unsigned count = entries[0];
+        // We can stop there if not a dir, otherwise go through subdirs/files
+        if (curr->file_type != IS_DIR) {
+                return;}
 
-	// Traverse children recursively, increasing depth to get proper indentation
-    	for (unsigned i = 1; i <= count; i++) {
-        	unsigned child_inode = entries[i];
-        	if (child_inode != 0) {
-            		dfs_recursion(fs, child_inode, depth + 1);
-        	}
-    	}
+        // Get block with directory entries
+        unsigned block = curr->block_pointers[0];
+        if (block == 0) return;  // Dir is empty
+
+        // Now get the number of children files we need to do DFS on
+        unsigned *entries = (unsigned *)fs->block_device->blocks[block - 1];
+        unsigned count = entries[0];
+
+        // Traverse children recursively, increasing depth to get proper indentation
+        for (unsigned i = 1; i <= count; i++) {
+                unsigned child_inode = entries[i];
+                if (child_inode != 0) {
+                        dfs_recursion(fs, child_inode, depth + 1);
+                }
+        }
 
 }
 
 
 // List all files
 void list_files(Filesystem *fs) {
-	// Call recursive function starting at the root inode and depth 0
-	dfs_recursion(fs, fs->superblock.root_inode_id, 0);
+        // Call recursive function starting at the root inode and depth 0
+        dfs_recursion(fs, fs->superblock.root_inode_id, 0);
 
         // This is a placeholder that just prints the names of each in-use inode
 //        for (int i = 0; i < MAX_FILES; i++) {
 //                if (fs->inodes[i].inode_id > 0) {
 //                       printf("Inode %d: File size = %d bytes File name: %s Directory it's in: %s\n", fs->inodes[i].inode_id, fs->inodes[i].size, fs->inodes[i].name, fs->inodes[(fs->inodes[i].parent_inode)-1].name);
 //                }
-//       
+//
 }
 
 /*
